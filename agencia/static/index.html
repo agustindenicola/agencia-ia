@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DGLab · Agencia</title>
+<style>
+  :root {
+    --bg: #0d0d12; --card: #17171f; --line: #2a2a36; --txt: #ececf1; --muted: #9a9aab;
+    --grad: linear-gradient(100deg, #7c3aed 0%, #0ea5e9 55%, #22a35a 100%);
+    --ok: #22a35a; --warn: #f59e0b; --bad: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--txt); font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding: 20px 16px 8px; max-width: 1100px; margin: auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .logo { font-weight: 800; font-size: 22px; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .chip { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+  .chip.on { border-color: var(--ok); color: #9ef0bd; }
+  main { max-width: 1100px; margin: auto; padding: 0 16px 60px; }
+  form.buscar { display: flex; gap: 8px; flex-wrap: wrap; background: var(--card); border: 1px solid var(--line); padding: 14px; border-radius: 14px; margin: 12px 0; }
+  select, input, textarea, button { font: inherit; color: var(--txt); background: #101017; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+  input[name=zona] { flex: 1; min-width: 160px; }
+  button { cursor: pointer; }
+  button.primario { background: var(--grad); border: 0; font-weight: 700; color: #fff; }
+  button:disabled { opacity: .5; cursor: wait; }
+  #tarea { color: var(--muted); min-height: 22px; }
+  #tarea.error { color: var(--bad); }
+  .tabs { display: flex; gap: 6px; margin: 16px 0; flex-wrap: wrap; }
+  .tabs button.on { border-color: #7c3aed; background: #1e1530; }
+  .lista { display: grid; gap: 12px; }
+  .neg { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; grid-template-columns: 64px 1fr; gap: 14px; }
+  .pts { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 20px; border: 3px solid var(--line); }
+  .neg h3 { margin: 0; font-size: 17px; }
+  .meta { color: var(--muted); font-size: 13px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .meta a { color: #7dd3fc; }
+  .diag { margin: 8px 0; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tags span { font-size: 12px; background: #20202b; padding: 2px 8px; border-radius: 6px; color: #c9c9d6; }
+  textarea { width: 100%; min-height: 96px; resize: vertical; }
+  .acciones { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .vacio { color: var(--muted); text-align: center; padding: 40px 0; }
+  @media (max-width: 560px) { .neg { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">DGLab · Agencia</span>
+  <span class="chip" id="chip-fuente"></span>
+  <span class="chip" id="chip-ia"></span>
+</header>
+<main>
+  <form class="buscar" id="buscar">
+    <select name="campana" id="campana"></select>
+    <input name="zona" placeholder="Zona, ej: Campana, Rosario, Montevideo" required />
+    <select name="limite"><option>10</option><option selected>20</option><option>40</option></select>
+    <button class="primario" id="btn-buscar">Buscar e investigar</button>
+  </form>
+  <div id="tarea"></div>
+  <div class="tabs" id="tabs"></div>
+  <div class="lista" id="lista"></div>
+</main>
+<script>
+const ESTADOS = [["analizado", "Para revisar"], ["aprobado", "Aprobados"], ["contactado", "Contactados"], ["nuevo", "Sin investigar"], ["descartado", "Descartados"]];
+let estado = "analizado", sondeo = null;
+const $ = (s) => document.querySelector(s);
+const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const api = async (url, body) => {
+  const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || "Error");
+  return d;
+};
+
+function color(p) { return p == null ? "var(--line)" : p >= 70 ? "var(--ok)" : p >= 45 ? "var(--warn)" : "var(--bad)"; }
+
+function tags(s) {
+  if (!s) return "";
+  const t = [];
+  t.push(s.tiene_web ? (s.web_ok ? "con web" : "web caída") : "sin web");
+  if (s.tiene_instagram) t.push("Instagram");
+  if (s.whatsapp_en_web) t.push("atiende por WhatsApp");
+  (s.ya_resuelto || []).forEach((x) => t.push("ya usa: " + x));
+  Object.keys(s.quejas || {}).forEach((q) => t.push("reseñas: " + q));
+  return `<div class="tags">${t.map((x) => `<span>${esc(x)}</span>`).join("")}</div>`;
+}
+
+function tarjeta(n) {
+  const links = [
+    n.web && `<a href="${esc(n.web)}" target="_blank" rel="noopener">web</a>`,
+    n.instagram && `<a href="${esc(n.instagram)}" target="_blank" rel="noopener">instagram</a>`,
+    n.maps_url && `<a href="${esc(n.maps_url)}" target="_blank" rel="noopener">mapa</a>`,
+  ].filter(Boolean).join(" · ");
+  const acciones = [];
+  if (n.estado !== "aprobado" && n.estado !== "contactado") acciones.push(`<button data-estado="aprobado">✓ Aprobar</button>`);
+  if (n.whatsapp_url) acciones.push(`<button class="primario" data-wa>Enviar por WhatsApp</button>`);
+  if (n.estado !== "contactado") acciones.push(`<button data-estado="contactado">Marcar contactado</button>`);
+  if (n.estado !== "descartado") acciones.push(`<button data-estado="descartado">Descartar</button>`);
+  return `<article class="neg" data-id="${n.id}">
+    <div class="pts" style="border-color:${color(n.puntaje)}">${n.puntaje ?? "–"}</div>
+    <div>
+      <h3>${esc(n.nombre)}</h3>
+      <div class="meta"><span>${esc(n.direccion || n.zona || "")}</span>${n.telefono ? `<span>📞 ${esc(n.telefono)}</span>` : ""}${n.rating ? `<span>⭐ ${n.rating} (${n.resenas})</span>` : ""}<span>${links}</span></div>
+      ${tags(n.senales)}
+      ${n.diagnostico ? `<p class="diag">${esc(n.diagnostico)}${n.paquete ? ` <b>→ ${esc(n.paquete)}</b>` : ""} <small style="color:var(--muted)">(${esc(n.analizado_con || "")})</small></p>` : ""}
+      ${n.mensaje ? `<textarea data-mensaje>${esc(n.mensaje)}</textarea>` : ""}
+      <div class="acciones">${acciones.join("")}</div>
+    </div>
+  </article>`;
+}
+
+async function cargar() {
+  const lista = await api(`/api/negocios?estado=${estado}&campana=${$("#campana").value}`);
+  $("#lista").innerHTML = lista.length ? lista.map(tarjeta).join("") : `<p class="vacio">No hay negocios en esta lista.</p>`;
+}
+
+async function guardar(id, cambios) {
+  await api(`/api/negocios/${id}`, cambios);
+}
+
+$("#lista").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  const art = b.closest(".neg"), id = art.dataset.id, txt = art.querySelector("[data-mensaje]");
+  if (txt) await guardar(id, { mensaje: txt.value });
+  if (b.dataset.estado) { await guardar(id, { estado: b.dataset.estado }); return cargar(); }
+  if (b.hasAttribute("data-wa")) {
+    const n = (await api(`/api/negocios?campana=${$("#campana").value}`)).find((x) => String(x.id) === id);
+    window.open(n.whatsapp_url, "_blank");
+    await guardar(id, { estado: "contactado" }); cargar();
+  }
+});
+
+$("#buscar").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try { await api("/api/buscar", Object.fromEntries(f)); vigilar(); }
+  catch (err) { mostrarTarea({ texto: err.message, error: true }); }
+});
+
+function mostrarTarea(t) {
+  $("#tarea").textContent = t.error ? "⚠ " + (t.error === true ? t.texto : t.error) : t.texto || "";
+  $("#tarea").className = t.error ? "error" : "";
+  $("#btn-buscar").disabled = !!t.activa;
+}
+
+async function vigilar() {
+  clearInterval(sondeo);
+  sondeo = setInterval(async () => {
+    const e = await api("/api/estado");
+    mostrarTarea(e.tarea);
+    if (!e.tarea.activa) { clearInterval(sondeo); cargar(); }
+  }, 1500);
+}
+
+async function iniciar() {
+  const e = await api("/api/estado");
+  $("#campana").innerHTML = e.campanas.map((c) => `<option value="${c.id}">${esc(c.nombre)}</option>`).join("");
+  $("#chip-fuente").textContent = e.fuente === "google" ? "Búsqueda: Google Maps" : "Búsqueda: OpenStreetMap (sin clave de Google)";
+  $("#chip-fuente").classList.toggle("on", e.fuente === "google");
+  $("#chip-ia").textContent = e.ia ? "IA: activa" : "IA: sin clave (usa plantilla)";
+  $("#chip-ia").classList.toggle("on", e.ia);
+  $("#tabs").innerHTML = ESTADOS.map(([k, t]) => `<button data-tab="${k}" class="${k === estado ? "on" : ""}">${t}</button>`).join("");
+  mostrarTarea(e.tarea);
+  if (e.tarea.activa) vigilar();
+  cargar();
+}
+$("#tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-tab]"); if (!b) return;
+  estado = b.dataset.tab;
+  document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
+  cargar();
+});
+$("#campana").addEventListener("change", cargar);
+iniciar();
+</script>
+</body>
+</html>
